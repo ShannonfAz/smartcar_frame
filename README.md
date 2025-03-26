@@ -62,3 +62,6 @@
   press p14 to run:
 
   你当前选择的功能
+
+- 通过使用p15，p16切换选择功能，使用p14执行功能，如果需要退出此gui程序，则按p13，此时你会进入一个确认是否退出的页面，再按一次p13终止程序
+#关于wifi选择程序wifi_setting_tool的配置，请参考[ShannonfAz/wifi_setting_tool](https://github.com/ShannonfAz/wifi_setting_tool)
