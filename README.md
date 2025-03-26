@@ -53,7 +53,7 @@
   
   凡是文档/教程输命令的地方前面是root@LoongOS:，比如说root@LoongOS:~#，那就是久久派，给我ssh连久久派输入！
   
-  其他的给我在你的vmware ubuntu虚拟机或wsl ubuntu上或什么其他乱七八糟linux上搞！
+  其他的给我在你的vmware ubuntu虚拟机或wsl ubuntu上或什么其他乱七八糟ubuntu上搞！
   
   没人让你用windows powershell!人才！
   
