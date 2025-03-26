@@ -1,0 +1,631 @@
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+#include <iostream>
+#include <vector>
+#include <math.h>
+#include "zf_common_headfile.h"
+
+#define MOTOR1_DIR   "/dev/zf_driver_gpio_motor_1"
+#define MOTOR1_PWM   "/dev/zf_device_pwm_motor_1"
+
+#define MOTOR2_DIR   "/dev/zf_driver_gpio_motor_2"
+#define MOTOR2_PWM   "/dev/zf_device_pwm_motor_2"
+
+#define SERVO_MOTOR1_PWM            "/dev/zf_device_pwm_servo"
+#define SERVO_MIDDLE 88
+
+struct pwm_info motor_1_pwm_info;
+struct pwm_info motor_2_pwm_info;
+struct pwm_info servo_pwm_info;
+
+#define SERVO_MOTOR_FREQ            (servo_pwm_info.freq)  
+
+#define MOTOR1_PWM_DUTY_MAX    (motor_1_pwm_info.duty_max)       
+#define MOTOR2_PWM_DUTY_MAX    (motor_2_pwm_info.duty_max)    
+#define PWM_DUTY_MAX                (servo_pwm_info.duty_max)  
+#define SERVO_MOTOR_L_MAX           (75+SERVO_MIDDLE-90)                       
+#define SERVO_MOTOR_R_MAX           (105+SERVO_MIDDLE-90)      
+#define SERVO_MOTOR_DUTY(x)         ((float)PWM_DUTY_MAX/(1000.0/(float)SERVO_MOTOR_FREQ)*(0.5+(float)(x)/90.0))
+
+using namespace cv;
+using namespace std;
+
+float servo_motor_duty = 88.0;
+
+void sigint_handler(int signum) 
+{
+    printf("收到Ctrl+C，程序即将退出\n");
+    exit(0);
+}
+
+VideoCapture cap(0);//在此决定使用哪个摄像头，一般是0
+
+void cleanup()
+{
+    printf("程序异常退出，执行清理操作\n");
+    // 关闭电机
+    pwm_set_duty(MOTOR1_PWM, 0);   
+    pwm_set_duty(MOTOR2_PWM, 0);  
+    pwm_set_duty(SERVO_MOTOR1_PWM, 0);    
+    cap.release();
+}
+
+
+
+
+int imgW = 320,imgH = 240;
+unsigned int USE_num = 2000;
+Mat img;
+//vector<unsigned int> start_point_l(2,0);//左边起点的x，y值
+//vector<unsigned int> start_point_r(2,0);//右边起点的x，y值
+int videocap(int code,int fps,int imgw,int imgh) {
+	switch (code) {
+	case 0:
+		cap.set(CAP_PROP_FOURCC, VideoWriter::fourcc('M', 'J', 'P', 'G'));
+		break;
+	case 1:
+		cap.set(CAP_PROP_FOURCC, VideoWriter::fourcc('Y', 'U', 'Y', 'V'));
+		break;
+	default:
+		cerr << "Error : wrong code" << endl;
+		return 0;
+	}
+	cap.set(CAP_PROP_FPS, fps);
+	cap.set(cv::CAP_PROP_FRAME_WIDTH, imgw);
+	cap.set(cv::CAP_PROP_FRAME_HEIGHT, imgh);
+	cap.read(img);
+	imgW = imgw;
+	imgH = imgh;
+	//USE_num = imgH * 3;
+	return 1;
+}
+Mat imggray, binimg, binimg1, imgblur, imgcanny, imgdil, imgoutput;
+void imgprocess() {
+	if (img.size().width > 1)cvtColor(img, imggray, COLOR_BGR2GRAY);
+	threshold(imggray, binimg, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+	Mat kernel = getStructuringElement(MORPH_ELLIPSE, Size(5, 5));
+	erode(binimg, binimg1, kernel);
+	dilate(binimg1, binimg, kernel);
+	//封框
+	line(binimg, Point(0, 0), Point(imgW, 0), Scalar(0), 3, 8, 0);
+	line(binimg, Point(imgW, 0), Point(imgW, imgH), Scalar(0), 3, 8, 0);
+	line(binimg, Point(imgW, imgH), Point(0, imgH), Scalar(0), 3, 8, 0);
+	line(binimg, Point(0, imgH), Point(0, 0), Scalar(0), 3, 8, 0);
+	cvtColor(binimg, imgoutput, COLOR_GRAY2BGR);//输出图像为imgoutput
+}
+vector<int> linemid(imgH + 1);
+//最长白列
+int longest() {
+	int i, j;
+	vector<int> zcbl(imgW, 0);
+	unsigned int zcbltrue = (imgW - 1) / 2;
+	int zcblmin = imgH;
+	for (i = 0;i < imgW;i++)zcbl[i] = imgH;
+	for (i = 0;i < imgW;i++) {
+		for (j = imgH - 3;j >= 0;j--) {
+			zcbl[i] = j;
+			if (binimg.at<uchar>(j, i) == 0)break;
+		}
+		if (zcbl[i] < zcblmin) {
+			zcbltrue = i;
+			zcblmin = zcbl[i];
+		}
+	}
+	//line(imgoutput, Point(zcbltrue, imgH - 1), Point(zcbltrue, zcblmin), Scalar(0, 0, 255), 1, 8, 0);
+	//要画最长白列就删斜杠
+	return zcbltrue;
+}
+vector<unsigned int> start_point_l(2, 0);//左边起点的x，y值
+vector<unsigned int> start_point_r(2, 0);//右边起点的x，y值
+unsigned int get_start_point(unsigned int start_row,int zcbltrue)
+{
+	unsigned i = 0, l_found = 0, r_found = 0;
+	//清零
+	start_point_l[0] = 0;//x
+	start_point_l[1] = 0;//y
+
+	start_point_r[0] = 0;//x
+	start_point_r[1] = 0;//y
+	if (zcbltrue < 10)zcbltrue = 10;
+	if (zcbltrue > imgW - 10)zcbltrue = imgW - 10;
+	//从中间往左边，先找起点
+	for (i = zcbltrue; i > 2; i--)
+	{
+		start_point_l[0] = i;//x
+		start_point_l[1] = start_row;//y
+		if (binimg.at<uchar>(start_row,i) == 255 && binimg.at<uchar>(start_row,i - 1) == 0)
+		{
+			//printf("找到左边起点image[%d][%d]\n", start_row,i);
+			l_found = 1;
+			break;
+		}
+	}
+
+	for (i = zcbltrue; i < imgW - 2; i++)
+	{
+		start_point_r[0] = i;//x
+		start_point_r[1] = start_row;//y
+		if (binimg.at<uchar>(start_row,i) == 255 && binimg.at<uchar>(start_row,i + 1) == 0)
+		{
+			//printf("找到右边起点image[%d][%d]\n",start_row, i);
+			r_found = 1;
+			break;
+		}
+	}
+
+	if (l_found && r_found)return 1;
+	else {
+		//printf("未找到起点\n");
+		return 0;
+	}
+}
+//左
+//vector<vector<int>> lineingl(4000,vector<int>(2))
+vector<vector<unsigned int>> points_l(USE_num, vector<unsigned int>(2, 0));//左线
+vector<vector<unsigned int>> points_r(USE_num, vector<unsigned int>(2, 0));//右线
+vector<unsigned int> dir_r(USE_num, 0);//用来存储右边生长方向
+vector<unsigned int> dir_l(USE_num, 0);//用来存储左边生长方向
+unsigned int data_stastics_l = 0;//统计左边找到点的个数
+unsigned int data_stastics_r = 0;//统计右边找到点的个数
+unsigned int hightest = 2;//最高点
+void search_l_r(unsigned int break_flag, Mat binimg, unsigned int* l_stastic, unsigned int* r_stastic, unsigned int l_start_x, unsigned int l_start_y, unsigned int r_start_x, unsigned int r_start_y, unsigned int* hightest)
+{
+
+	unsigned int i = 0, j = 0;
+
+	//左边变量
+	unsigned int search_filds_l[8][2] = { {  0 } };
+	unsigned int index_l = 0;
+	unsigned int temp_l[8][2] = { {  0 } };
+	unsigned int center_point_l[2] = { 0 };
+	unsigned int l_data_statics;//统计左边
+	//定义八个邻域
+	static int seeds_l[8][2] = { {0,  1},{-1,1},{-1,0},{-1,-1},{0,-1},{1,-1},{1,  0},{1, 1}, };
+	//{-1,-1},{0,-1},{+1,-1},
+	//{-1, 0},	     {+1, 0},
+	//{-1,+1},{0,+1},{+1,+1},
+	//这个是顺时针
+
+	//右边变量
+	unsigned int search_filds_r[8][2] = { {  0 } };
+	unsigned int center_point_r[2] = { 0 };//中心坐标点
+	unsigned int index_r = 0;//索引下标
+	unsigned int temp_r[8][2] = { {  0 } };
+	unsigned int r_data_statics;//统计右边
+	//定义八个邻域
+	static int seeds_r[8][2] = { {0,  1},{1,1},{1,0}, {1,-1},{0,-1},{-1,-1}, {-1,  0},{-1, 1}, };
+	//{-1,-1},{0,-1},{+1,-1},
+	//{-1, 0},	     {+1, 0},
+	//{-1,+1},{0,+1},{+1,+1},
+	//这个是逆时针
+
+	l_data_statics = *l_stastic;//统计找到了多少个点，方便后续把点全部画出来
+	r_data_statics = *r_stastic;//统计找到了多少个点，方便后续把点全部画出来
+
+	//第一次更新坐标点  将找到的起点值传进来
+	center_point_l[0] = l_start_x;//x
+	center_point_l[1] = l_start_y;//y
+	center_point_r[0] = r_start_x;//x
+	center_point_r[1] = r_start_y;//y
+
+	//开启邻域循环
+	while (break_flag--)
+	{
+
+		//左边
+		for (i = 0; i < 8; i++)//传递8F坐标
+		{
+			search_filds_l[i][0] = center_point_l[0] + seeds_l[i][0];//x
+			search_filds_l[i][1] = center_point_l[1] + seeds_l[i][1];//y
+		}
+		//中心坐标点填充到已经找到的点内
+		if (l_data_statics < 0)l_data_statics = 0;
+		if (r_data_statics < 0)r_data_statics = 0;
+		if (l_data_statics > USE_num - 1)l_data_statics = USE_num - 1;
+		if (r_data_statics > USE_num - 1)r_data_statics = USE_num - 1;
+		points_l[l_data_statics][0] = center_point_l[0];//x
+		points_l[l_data_statics][1] = center_point_l[1];//y
+		circle(imgoutput, Point(points_l[l_data_statics][0], points_l[l_data_statics][1]), 1, Scalar(0, 0, 255), FILLED);
+		l_data_statics++;//索引加一
+
+		//右边
+		for (i = 0; i < 8; i++)//传递8F坐标
+		{
+			search_filds_r[i][0] = center_point_r[0] + seeds_r[i][0];//x
+			search_filds_r[i][1] = center_point_r[1] + seeds_r[i][1];//y
+		}
+		//中心坐标点填充到已经找到的点内
+		points_r[r_data_statics][0] = center_point_r[0];//x
+		points_r[r_data_statics][1] = center_point_r[1];//y
+		circle(imgoutput, Point(points_r[r_data_statics][0], points_r[r_data_statics][1]), 1, Scalar(255, 0, 0), FILLED);
+		index_l = 0;//先清零，后使用
+		for (i = 0; i < 8; i++)
+		{
+			temp_l[i][0] = 0;//先清零，后使用
+			temp_l[i][1] = 0;//先清零，后使用
+		}
+
+		//左边判断
+		for (i = 0; i < 8; i++)
+		{
+			if (binimg.at<uchar>(search_filds_l[i][1],search_filds_l[i][0]) == 0
+				&& binimg.at<uchar>(search_filds_l[(i + 1) & 7][1],search_filds_l[(i + 1) & 7][0]) == 255)
+			{
+				temp_l[index_l][0] = search_filds_l[(i)][0];
+				temp_l[index_l][1] = search_filds_l[(i)][1];
+				index_l++;
+				dir_l[l_data_statics - 1] = (i);//记录生长方向
+			}
+
+			if (index_l)
+			{
+				//更新坐标点
+				center_point_l[0] = temp_l[0][0];//x
+				center_point_l[1] = temp_l[0][1];//y
+				for (j = 0; j < index_l; j++)
+				{
+					if (center_point_l[1] > temp_l[j][1])
+					{
+						center_point_l[0] = temp_l[j][0];//x
+						center_point_l[1] = temp_l[j][1];//y
+					}
+				}
+			}
+
+		}
+		if (l_data_statics > 3 && r_data_statics > 3) {
+			if ((points_r[r_data_statics][0] == points_r[r_data_statics - 1][0] && points_r[r_data_statics][0] == points_r[r_data_statics - 2][0]
+				&& points_r[r_data_statics][1] == points_r[r_data_statics - 1][1] && points_r[r_data_statics][1] == points_r[r_data_statics - 2][1])
+				|| (points_l[l_data_statics - 1][0] == points_l[l_data_statics - 2][0] && points_l[l_data_statics - 1][0] == points_l[l_data_statics - 3][0]
+					&& points_l[l_data_statics - 1][1] == points_l[l_data_statics - 2][1] && points_l[l_data_statics - 1][1] == points_l[l_data_statics - 3][1]))
+			{
+				//printf("三次进入同一个点，退出\n");
+				break;
+			}
+		}
+		if (fabs(points_r[r_data_statics][0] - points_l[l_data_statics - 1][0]) < 2
+			&& fabs(points_r[r_data_statics][1] - points_l[l_data_statics - 1][1] < 2)
+			)
+		{
+			//printf("\n左右相遇退出\n");	
+			*hightest = (points_r[r_data_statics][1] + points_l[l_data_statics - 1][1]) >> 1;//取出最高点
+			//printf("\n在y=%d处退出\n",*hightest);
+			break;
+		}
+		if ((points_r[r_data_statics][1] < points_l[l_data_statics - 1][1]))
+		{
+			//printf("\n如果左边比右边高了，左边等待右边\n");
+			continue;//如果左边比右边高了，左边等待右边
+		}
+		if (dir_l[l_data_statics - 1] == 7
+			&& (points_r[r_data_statics][1] > points_l[l_data_statics - 1][1]))//左边比右边高且已经向下生长了
+		{
+			//printf("\n左边开始向下了，等待右边，等待中... \n");
+			center_point_l[0] = points_l[l_data_statics - 1][0];//x
+			center_point_l[1] = points_l[l_data_statics - 1][1];//y
+			l_data_statics--;
+		}
+		r_data_statics++;//索引加一
+
+		index_r = 0;//先清零，后使用
+		for (i = 0; i < 8; i++)
+		{
+			temp_r[i][0] = 0;//先清零，后使用
+			temp_r[i][1] = 0;//先清零，后使用
+		}
+
+		//右边判断
+		for (i = 0; i < 8; i++)
+		{
+			if (binimg.at<uchar>(search_filds_r[i][1],search_filds_r[i][0]) == 0
+				&& binimg.at<uchar>(search_filds_r[(i + 1) & 7][1],search_filds_r[(i + 1) & 7][0]) == 255)
+			{
+				temp_r[index_r][0] = search_filds_r[(i)][0];
+				temp_r[index_r][1] = search_filds_r[(i)][1];
+				index_r++;//索引加一
+				dir_r[r_data_statics - 1] = (i);//记录生长方向
+				//printf("dir[%d]:%d\n", r_data_statics - 1, dir_r[r_data_statics - 1]);
+			}
+			if (index_r)
+			{
+
+				//更新坐标点
+				center_point_r[0] = temp_r[0][0];//x
+				center_point_r[1] = temp_r[0][1];//y
+				for (j = 0; j < index_r; j++)
+				{
+					if (center_point_r[1] > temp_r[j][1])
+					{
+						center_point_r[0] = temp_r[j][0];//x
+						center_point_r[1] = temp_r[j][1];//y
+					}
+				}
+
+			}
+		}
+
+
+	}
+
+
+	//取出循环次数
+	*l_stastic = l_data_statics;
+	*r_stastic = r_data_statics;
+
+}
+//提取边线
+vector<unsigned int> l_border(imgH);
+vector<unsigned int> r_border(imgH);
+vector<unsigned int> center_line(imgH);
+void get_left(unsigned int total_L)
+{
+	//cout << "totol L=" << total_L << endl;
+	unsigned int i = 0;
+	unsigned int j = 0;
+	unsigned int h = 0;
+	//初始化
+	for (i = 0;i < imgH;i++)
+	{
+		l_border[i] = 1;
+	}
+	h = imgH - 11;
+	//左边
+	for (j = 0; j < total_L; j++)
+	{
+		//printf("%d\n", j);
+		if (points_l[j][1] == h)
+		{
+			//cout << "ltrue" << endl;
+			l_border[h] = points_l[j][0] + 1;
+			//circle(imgoutput, Point(l_border[h], h), 1, Scalar(255, 0, 0), FILLED);
+		}
+		else continue; //每行只取一个点，没到下一行就不记录
+		h--;
+		if (h == 0)
+		{
+			break;//到最后一行退出
+		}
+	}
+}
+void get_right(unsigned int total_R)
+{
+	//cout << "totol R=" << total_R << endl;
+	unsigned int i = 0;
+	unsigned int j = 0;
+	unsigned int h = 0;
+	for (i = 0; i < imgH; i++)
+	{
+		r_border[i] = imgW-1;//右边线初始化放到最右边，左边线放到最左边，这样八邻域闭合区域外的中线就会在中间，不会干扰得到的数据
+	}
+	h = imgH - 11;
+	//右边
+	for (j = 0; j < total_R; j++)
+	{
+		if (points_r[j][1] == h)
+		{
+			r_border[h] = points_r[j][0] - 1;
+			circle(imgoutput, Point(r_border[h], h), 1, Scalar(255, 0, 0), FILLED);
+		}
+		else continue;//每行只取一个点，没到下一行就不记录
+		h--;
+		if (h == 0)break;//到最后一行退出
+	}
+}
+void get_middle() {
+	int i;
+	for (i = hightest; i < imgH - 1; i++)
+	{
+		center_line[i] = (l_border[i] + r_border[i]) / 2;//求中线 //byd，这家伙深得优化精髓，>>1就是右移一位，即为/2
+		circle(imgoutput, Point(center_line[i], i), 1, Scalar(114, 51, 41), FILLED);
+		//求中线最好最后求，不管是补线还是做状态机，全程最好使用一组边线，中线最后求出，不能干扰最后的输出
+	}
+}
+//******************以上为找线，以下为处理十字********************//
+int limit_a_b(int x, int a, int b)
+{
+	if (x < a) x = a;
+	if (x > b) x = b;
+	return x;
+}
+float Slope_Calculate(unsigned int begin, unsigned int end, unsigned int* border)
+{
+	float xsum = 0, ysum = 0, xysum = 0, x2sum = 0;
+	int i = 0;
+	float result = 0;
+	static float resultlast;
+
+	for (i = begin; i < end; i++)
+	{
+		xsum += i;
+		ysum += border[i];
+		xysum += i * (border[i]);
+		x2sum += i * i;
+
+	}
+	if ((end - begin) * x2sum - xsum * xsum) //判断除数是否为零
+	{
+		result = ((end - begin) * xysum - xsum * ysum) / ((end - begin) * x2sum - xsum * xsum);
+		resultlast = result;
+	}
+	else
+	{
+		result = resultlast;
+	}
+	return result;
+}
+void calculate_s_i(unsigned int start, unsigned int end, unsigned int* border, float* slope_rate, float* intercept)
+{
+	unsigned int i, num = 0;
+	unsigned int xsum = 0, ysum = 0;
+	float y_average, x_average;
+
+	num = 0;
+	xsum = 0;
+	ysum = 0;
+	y_average = 0;
+	x_average = 0;
+	for (i = start; i < end; i++)
+	{
+		xsum += i;
+		ysum += border[i];
+		num++;
+	}
+
+	//计算各个平均数
+	if (num)
+	{
+		x_average = (float)(xsum / num);
+		y_average = (float)(ysum / num);
+
+	}
+
+	/*计算斜率*/
+	*slope_rate = Slope_Calculate(start, end, border);//斜率
+	*intercept = y_average - (*slope_rate) * x_average;//截距
+}
+void cross_fill(Mat binimg, unsigned int* l_border, unsigned int* r_border, unsigned int total_num_l, unsigned int total_num_r, unsigned int* dir_l, unsigned int* dir_r)//, unsigned int(*points_l)[2], unsigned int(*points_r)[2])
+{
+	unsigned int i;
+	unsigned int break_num_l = 0;
+	unsigned int break_num_r = 0;
+	unsigned int start, end;
+	float slope_l_rate = 0, intercept_l = 0;
+	//出十字
+
+	for (i = 1; i < total_num_l; i++)
+	{
+		//cout << "???" << endl;
+		//cout << dir_l[i] << endl;
+		if (dir_l[i - 1] == 6 && dir_l[i] == 6 && dir_l[i + 3] == 4 && dir_l[i + 5] == 4 && dir_l[i + 7] == 4)
+		{
+			break_num_l = points_l[i][1];//传递y坐标
+			circle(imgoutput, Point(points_l[i][0], points_l[i][1]), 3, Scalar(255, 0, 255), FILLED);
+			//cout << "break_num-L:"<< break_num_l << endl;
+			//printf("I:%d\n", i);
+			//printf("十字标志位：1\n");
+			break;
+		}
+	}
+	for (i = 1; i < total_num_r; i++)
+	{
+		if (dir_r[i - 1] == 6 && dir_r[i] == 6 && dir_r[i + 3] == 4 && dir_r[i + 5] == 4 && dir_r[i + 7] == 4)
+		{
+			break_num_r = points_r[i][1];//传递y坐标
+			circle(imgoutput, Point(points_r[i][0], points_r[i][1]), 3, Scalar(255, 0, 255), FILLED);
+			//cout << "break_num-R:" << break_num_r << endl;
+			//printf("brea_knum-R:%d\n", break_num_r);
+			//printf("I:%d\n", i);
+			//printf("十字标志位：1\n");
+			break;
+		}
+	}
+	if (break_num_l && break_num_r)// && binimg.at<uchar>(imgH - 4, 4) && binimg.at<uchar>(imgH - 4, imgW - 4))//两边生长方向都符合条件
+	{
+		//计算斜率
+		start = break_num_l - 20;
+		start = limit_a_b(start, 0, imgH);
+		end = break_num_l - 5;
+		calculate_s_i(start, end, l_border, &slope_l_rate, &intercept_l);
+		//printf("slope_l_rate:%d\nintercept_l:%d\n", slope_l_rate, intercept_l);
+		//cout << slope_l_rate << endl;
+		for (i = break_num_l - 5; i < imgH - 1; i++)
+		{
+			//cout << "nmsl" << endl;
+			l_border[i] = slope_l_rate * (i)+intercept_l;//y = kx+b
+			l_border[i] = limit_a_b(l_border[i], 3, imgW - 3);//限幅
+		}
+
+		//计算斜率
+		start = break_num_r - 20;//起点
+		start = limit_a_b(start, 0, imgH);//限幅
+		end = break_num_r - 5;//终点
+		calculate_s_i(start, end, r_border, &slope_l_rate, &intercept_l);
+		//printf("slope_l_rate:%d\nintercept_l:%d\n", slope_l_rate, intercept_l);
+		for (i = break_num_r - 5; i < imgH - 1; i++)
+		{
+			r_border[i] = slope_l_rate * (i)+intercept_l;
+			r_border[i] = limit_a_b(r_border[i], 3, imgW - 3);
+		}
+
+
+	}
+	//else if (break_num_l && break_num_r) {
+
+	//}
+
+}
+//nmlgb，补线终于nmd写好了，凑合用着吧，不抗斜入，控制调参给我调好点
+//以下为环岛
+
+
+
+
+int main(int, char**) {
+    pwm_get_dev_info(MOTOR1_PWM, &motor_1_pwm_info);
+    pwm_get_dev_info(MOTOR2_PWM, &motor_2_pwm_info);
+    pwm_get_dev_info(SERVO_MOTOR1_PWM, &servo_pwm_info);
+
+
+    atexit(cleanup);
+    signal(SIGINT, sigint_handler);
+
+    gpio_set_level(MOTOR1_DIR, 1);                                      // DIR输出高电平，1为正转
+
+    pwm_set_duty(MOTOR1_PWM, 1500);       
+
+    gpio_set_level(MOTOR2_DIR, 1);                                      // DIR输出高电平
+    pwm_set_duty(MOTOR2_PWM, 1500);
+
+
+
+
+	int videostate = videocap(0,60,320,240);
+	if (videostate == 0)return 0;
+	int key1;
+	int i, j;
+    int servoangel;
+	//PWM_ATIM test(86, 0b11, 3, 2000000, 150000, 1);
+	//test.enable();
+	//GPIO lmotordir 
+
+	while (true) {
+		cap.read(img);
+		imgprocess();
+		int zcbltrue = longest();
+		get_start_point(imgH - 10, zcbltrue);
+		//新找线
+		circle(imgoutput, Point(start_point_l[0], start_point_l[1]), 3, Scalar(0, 0, 255), FILLED);
+		circle(imgoutput, Point(start_point_r[0], start_point_r[1]), 3, Scalar(0, 0, 255), FILLED);
+		//cout << USE_num << "," << start_point_l[0] << "," << start_point_l[1] << "," << start_point_r[0] << "," << start_point_r[1] << "," << hightest << endl;
+		search_l_r(USE_num, binimg, &data_stastics_l, &data_stastics_r, start_point_l[0], start_point_l[1], start_point_r[0], start_point_r[1], &hightest);
+		//cout << data_stastics_l << "，" << data_stastics_r << endl;
+		get_left(data_stastics_l);
+		get_right(data_stastics_r);
+		//cross_fill(binimg, l_border.data(), r_border.data(), data_stastics_l, data_stastics_r, dir_l.data(), dir_r.data());//, points_l.data(), points_r.data());
+		data_stastics_l = 0;
+		data_stastics_r = 0;
+		get_middle();
+        servoangel = (uint16)SERVO_MOTOR_DUTY(SERVO_MIDDLE+imgW/4-center_line[180]/2);
+        if(servoangel >= (uint16)SERVO_MOTOR_DUTY(SERVO_MOTOR_R_MAX))servoangel = (uint16)SERVO_MOTOR_DUTY(SERVO_MOTOR_R_MAX);
+        if(servoangel <= (uint16)SERVO_MOTOR_DUTY(SERVO_MOTOR_L_MAX))servoangel = (uint16)SERVO_MOTOR_DUTY(SERVO_MOTOR_L_MAX);
+		servoangel = SERVO_MIDDLE;
+        pwm_set_duty(SERVO_MOTOR1_PWM, servoangel);
+		//cout <<imgW/4-center_line[180]/2<<endl;
+		cout <<servoangel<<endl;
+		//a1:cout << imgW << "," << imgH<< endl;
+		//cout << l_border[160] << "," << r_border[160] << endl;
+		//cout << "L:" << points_l[80][0] << "," << points_l[80][1] << endl;
+		//cout << "R:" << points_r[80][0] << "," << points_r[80][1] << endl;
+		//cout << center_line[160] << endl;
+		//imshow("Image", imgoutput);
+		//test.setDutyCycle(150000-(imgW/2-center_line[180])*400);
+		//cout << 150000-(imgW/2-center_line[180])*300 <<endl;
+		//imshow("Image1", img);
+		system_delay_ms(2);
+		//test.setDutyCycle(200000);
+		// usleep(2000000);
+		// test.setDutyCycle(100000);
+		// usleep(1000000);
+	}
+}
