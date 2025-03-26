@@ -48,6 +48,15 @@
 
      不要求你多么精通linux，但vi，vim至少要会用！
   8. 输入ldconfig，回车，sync，reboot，完事！
+
+  然后还有某些分不清哪些操作在板子上做的，哪些操作在ubuntu上做的人才
+  
+  凡是文档/教程输命令的地方前面是root@LoongOS:，比如说root@LoongOS:~#，那就是久久派，给我ssh连久久派输入！
+  
+  其他的给我在你的vmware ubuntu虚拟机或wsl ubuntu上或什么其他乱七八糟linux上搞！
+  
+  没人让你用windows powershell!人才！
+  
 ## 目前该项目处在v0.1，功能较少，目前程序仅有如下功能：
 - 建议将基于此框架写出来的程序丢在rc.local以达到开机自启
 - 如果你这么做后，开机时会显示如下内容
