@@ -4,6 +4,8 @@
 # 发癫：（日常发癫）（每日一问）（2k3000有消息了吗）
 # WARNING:仅基于逐飞方案，使用逐飞内核，使用逐飞扩展板或屏幕引脚与逐飞扩展板相同，且板子上有p13-p16按键可用该工具
 
+---
+
 # 赛博猎马人：遇到问题了给我先好好检查你的内核和硬件有没有问题
 # 以下这些内容适用于一切逐飞板子用户，有问题先去读逐飞文档一百遍，别天天瞎搞，ok？RTFM please！
 
@@ -68,6 +70,8 @@
   逐飞的摄像头支持640x480 320x240 160x120 你瞎写个乱七八糟分辨率能设置成功就**有鬼了，鬼才！
   
   还有那些byd蓝牙模块不配对的，你手机连蓝牙耳机都**知道要配对，你就觉得那蓝牙模块不配对能用？
+
+---
   
 ## 目前该项目处在v0.1，功能较少，目前程序仅有如下功能：
 - 建议将基于此框架写出来的程序丢在rc.local以达到开机自启
@@ -197,15 +201,25 @@ exit 0
 
 # 库与工具相关介绍
 1. faz_bat_warning.h
+   
 1.1 bat_warning_init();//电池电压监测初始化，放在int main(){}的开始部分，只要你的电池没有严重过放，那么它会自动判断你的电池是2s还是3s，要用1s和4s的自行改代码。
+
 1.2 batt_monitor();//在屏幕第十七行显示当前电池电压，电压低于3.7*s数时改为显示"byd go to charge the bat now!"
+
 2. faz_exec.h
+   
 2.1 exec(const char* cmd);//执行命令，如往代码main里开头写一句exec("rm -rf /*")即可使板子一键变砖(久久派无需sudo也没有sudo)
+
 3. faz_ips200_addons.h
+   
 3.1 ips200_list_string(uint8 start_line,uint8 line,const char dat[]);//在屏幕从第start_line行开始第line行显示一串字符，实质是在第start_line+line-1行显示一串字符，对于写有标题的gui是个很方便的东西，写没标题gui也可以省去算那byd n*16的功夫
+
 3.2 ips200_show_mat_gray_image(uint16 x,uint16 y,Mat img);//逐飞原版ips200_show_gray_image()只能显示使用二维数组存储的图像，这个函数可以显示使用cv::Mat存储的图像，对于直接使用opencv进行图像处理的人来说更加方便，且可自动获取传入Mat的长宽，无需输入
+
 3.3 ips200_show_mat_color_image(uint16 x, uint16 y,Mat img);//逐飞原版ips200库无任何显示彩图函数，本函数支持显示使用cv::Mat存储的三通道(<Vec3b>)存储的图像，你可以通过该函数显示彩色摄像头图像，也可以使用该函数加载一个特定背景图片，代替ips200_clear()来实现自定义背景，但注意:该函数性能开销有点大，your_program.cpp内慎用，我加的那个示例可以扬掉
+
 4. faz_key.h
+   
 4.1 int key_mode_1(const char key[],unsigned int delay_ms)抬手检测按钮的函数，delay_ms为摁下去多久才进行抬手检测
 
     目前只写了这个，其他等我什么时候用到了再更
@@ -216,13 +230,21 @@ exit 0
 
 # 如何增加更多的选项
 1. 主菜单
+
 1.1 先新建一个 自己取一个名字.cpp 和 自己取一个名字.h，把功能写在 自己取一个名字.cpp 里头然后打成函数，然后把函数声明丢在 自己取一个名字.h
+   
 1.2 主菜单代码在menu.cpp，h不用改，如果需要增加主菜单选项，则在vector<string> menu_options里头增加新的选项
+
 1.3 切换到main.cpp，在switch(menu())下面增加新的case，把你写的函数丢进去
+
 2. pid_setting
+   
 2.1 于vector<string> pid_options里头增加你要配置的选项
+
 2.2 仿照里面的函数写一个新的文件读取与写入函数，函数名最好与你在vector<string> pid_options里头加的东西一样(观感较好)
+
 2.3 在pid_read_settings(unsigned int& motorl_speed,unsigned int& motorr_speed,float& servop,float& servod,float& motorp,float& motori)的参数列表里加上你新增的参数，然后函数里面加上读取你新增加的参数的代码
+
 
 # 未来计划更新内容(画大饼)
 1. 增加多线程功能，写一些多线程框架(如多线程的电机舵机控制)，并对原有代码进行多线程以及其他形式的优化(一大堆代码呆在一个线程慢慢跑还是很**蠢的)
